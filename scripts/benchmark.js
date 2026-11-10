@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { stringify } from "yaml"
-import { searchOperations } from "../src/lookup.js"
+import { searchOperations } from "../src/search.js"
 import {
   listOperations,
   renderEndpoint,

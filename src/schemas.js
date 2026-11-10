@@ -1,3 +1,4 @@
+import { EXTERNAL_DOCUMENTS_KEY } from "./bundle.js"
 import {
   collectDirectReferences,
   listOperations,
@@ -5,21 +6,77 @@ import {
   resolvePointer,
 } from "./render.js"
 
-const SCHEMA_PREFIXES = ["#/components/schemas/", "#/definitions/"]
+const SCHEMA_SECTIONS = ["/components/schemas/", "/definitions/"]
+const EXTERNAL_PREFIX = `#/${EXTERNAL_DOCUMENTS_KEY}/`
+const OTHER_SECTION_PATTERN =
+  /^\/(components\/(?!schemas\/)[^/]+|parameters|responses|paths|securityDefinitions)\//
 
 const escapePointerKey = key => key.replace(/~/g, "~0").replace(/\//g, "~1")
 
-const isSchemaReference = reference =>
-  SCHEMA_PREFIXES.some(prefix => reference.startsWith(prefix))
+// Splits a reference into the document it lives in ("#" for the spec
+// itself) and the pointer inside that document.
+const splitDocument = reference => {
+  if (!reference.startsWith(EXTERNAL_PREFIX)) {
+    return { documentPrefix: "#", pointer: reference.slice(1) }
+  }
+  const keyEnd = reference.indexOf("/", EXTERNAL_PREFIX.length)
+  return keyEnd === -1
+    ? { documentPrefix: reference, pointer: "" }
+    : {
+        documentPrefix: reference.slice(0, keyEnd),
+        pointer: reference.slice(keyEnd),
+      }
+}
 
-export const listSchemaReferences = spec => [
-  ...Object.keys(spec.components?.schemas || {}).map(
-    schemaName => `${SCHEMA_PREFIXES[0]}${escapePointerKey(schemaName)}`
+// In the spec itself only the schema sections hold schemas. Other files
+// are free-form, so anything outside a known non-schema section counts.
+const isSchemaReference = reference => {
+  const { documentPrefix, pointer } = splitDocument(reference)
+  return documentPrefix === "#"
+    ? SCHEMA_SECTIONS.some(section => pointer.startsWith(section))
+    : !OTHER_SECTION_PATTERN.test(pointer)
+}
+
+const declaredSchemaReferences = (document, documentPrefix) => [
+  ...Object.keys(document?.components?.schemas || {}).map(
+    schemaName =>
+      `${documentPrefix}${SCHEMA_SECTIONS[0]}${escapePointerKey(schemaName)}`
   ),
-  ...Object.keys(spec.definitions || {}).map(
-    schemaName => `${SCHEMA_PREFIXES[1]}${escapePointerKey(schemaName)}`
+  ...Object.keys(document?.definitions || {}).map(
+    schemaName =>
+      `${documentPrefix}${SCHEMA_SECTIONS[1]}${escapePointerKey(schemaName)}`
   ),
 ]
+
+const buildSchemaReferences = spec => {
+  const externalDocuments = Object.entries(spec[EXTERNAL_DOCUMENTS_KEY] || {})
+  if (!externalDocuments.length) return declaredSchemaReferences(spec, "#")
+  const referencedExternally = [...collectDirectReferences(spec)].filter(
+    reference =>
+      reference.startsWith(EXTERNAL_PREFIX) && isSchemaReference(reference)
+  )
+  return [
+    ...new Set([
+      ...declaredSchemaReferences(spec, "#"),
+      ...externalDocuments.flatMap(([location, document]) =>
+        declaredSchemaReferences(
+          document,
+          `${EXTERNAL_PREFIX}${escapePointerKey(location)}`
+        )
+      ),
+      ...referencedExternally,
+    ]),
+  ]
+}
+
+const schemaReferencesBySpec = new WeakMap()
+
+export const listSchemaReferences = spec => {
+  if (!schemaReferencesBySpec.has(spec)) {
+    schemaReferencesBySpec.set(spec, buildSchemaReferences(spec))
+  }
+  return schemaReferencesBySpec.get(spec)
+}
 
 const targetsBySpec = new WeakMap()
 
@@ -72,11 +129,24 @@ const usageOf = spec => {
   return usageBySpec.get(spec)
 }
 
+// For every operation: the schemas it references itself and the schemas
+// those reference in turn (one level further, not the whole graph).
 export const listOperationsWithSchemaNames = spec =>
-  usageOf(spec).map(({ entry, direct }) => ({
-    entry,
-    schemaNames: [...direct].filter(isSchemaReference).map(referenceName),
-  }))
+  usageOf(spec).map(({ entry, direct }) => {
+    const schemaReferences = [...direct].filter(isSchemaReference)
+    const nestedReferences = new Set(
+      schemaReferences.flatMap(reference => targetsOf(spec, reference))
+    )
+    return {
+      entry,
+      schemaNames: schemaReferences.map(referenceName),
+      nestedSchemaNames: [...nestedReferences]
+        .filter(
+          reference => isSchemaReference(reference) && !direct.has(reference)
+        )
+        .map(referenceName),
+    }
+  })
 
 export const findSchemaUsers = (spec, reference) => {
   const usage = usageOf(spec)

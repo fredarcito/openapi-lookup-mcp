@@ -8,7 +8,7 @@ import { getEndpoint, getSchema, searchEndpoints } from "./tools.js"
 import { SERVER_NAME, initProject } from "./init.js"
 
 const USAGE = `Usage: openapi-lookup-mcp <spec url or file>
-       openapi-lookup-mcp init <spec url or file>
+       openapi-lookup-mcp init <spec url or file> [--name <server name>] [--force]
 
 The spec location can also be given in the OPENAPI_SPEC_URL environment variable.`
 
@@ -31,13 +31,28 @@ const toToolError = error => ({
 
 if (process.argv[2] === "init") {
   try {
+    const initArguments = process.argv.slice(3)
+    const nameIndex = initArguments.indexOf("--name")
+    const name = nameIndex === -1 ? SERVER_NAME : initArguments[nameIndex + 1]
+    if (!name || name.startsWith("--")) {
+      throw new Error("--name needs a server name, e.g. --name billing-api")
+    }
+    const specUrl = initArguments.find(
+      (argument, index) =>
+        !argument.startsWith("--") &&
+        (nameIndex === -1 || index !== nameIndex + 1)
+    )
     const files = initProject({
       cwd: process.cwd(),
       packageName: packageInfo.name,
       version: packageInfo.version,
-      specUrl: process.argv[3],
+      specUrl,
+      name,
+      force: initArguments.includes("--force"),
     })
-    console.log(`Configured ${SERVER_NAME} in:\n${files.map(f => `  ${f}`).join("\n")}`)
+    console.log(
+      `Configured ${name} in:\n${files.map(({ file, change }) => `  ${file} (${change})`).join("\n")}`
+    )
     console.log("Open the project in Claude Code or Cursor and approve the server when asked.")
     process.exit(0)
   } catch (error) {
@@ -64,13 +79,13 @@ server.registerTool(
   {
     title: "Search API endpoints",
     description:
-      "Find API endpoints by keywords. Looks in the path, method, operation id, summary, tags, description, parameter names and schema names, and ranks the best matches first. Endpoints matching every keyword are listed; when none does, the closest partial matches are returned. Returns one line per endpoint.",
+      "Find API endpoints by keywords, best match first. Looks in the path, method, operation id, summary, tags, description, parameter names, schema names and the property names of request and response bodies. Word forms, camelCase or snake_case identifiers and small typos are understood. Endpoints matching every keyword are listed; when none does, the closest partial matches are returned. Returns one line per endpoint.",
     inputSchema: {
       query: z
         .string()
         .min(1)
         .describe(
-          'Keywords rather than a sentence, e.g. "jobs" or "post company photos"'
+          'Keywords rather than a sentence, e.g. "jobs", "create company photo" or "listJobMatches"'
         ),
     },
     annotations: { readOnlyHint: true },

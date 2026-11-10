@@ -3,11 +3,14 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { parse } from "yaml"
-import { bundleSpec, isRemote } from "./bundle.js"
+import { SKIPPED_DOCUMENTS_KEY, bundleSpec, isRemote } from "./bundle.js"
+import { downloadText } from "./download.js"
 
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000
 const RETRY_MIN_AGE_MS = 5 * 60 * 1000
 const ENCODING = "utf8"
+const MAX_SPEC_BYTES = 50 * 1024 * 1024
+const MAX_SKIPPED_SHOWN = 3
 
 const cacheDirectory = () =>
   path.join(
@@ -31,20 +34,11 @@ const parseSpec = (specText, source) => {
   return bundleSpec(spec, source)
 }
 
-const fetchText = source =>
-  fetch(source).then(response => {
-    if (!response.ok) {
-      throw new Error(
-        `Request to ${source} failed with status ${response.status}`
-      )
-    }
-    return response.text()
-  })
-
 export const readSpec = source =>
-  (isRemote(source) ? fetchText(source) : readFile(source, ENCODING)).then(
-    specText => parseSpec(specText, source)
-  )
+  (isRemote(source)
+    ? downloadText(source, { maxBytes: MAX_SPEC_BYTES })
+    : readFile(source, ENCODING)
+  ).then(specText => parseSpec(specText, source))
 
 const formatAge = fetchedAt => {
   const totalMinutes = Math.floor((Date.now() - fetchedAt) / 60000)
@@ -53,9 +47,21 @@ const formatAge = fetchedAt => {
   return `${Math.floor(totalMinutes / 60)}h ${totalMinutes % 60}m ago`
 }
 
+const describeSkipped = spec => {
+  const skipped = Object.entries(spec[SKIPPED_DOCUMENTS_KEY] || {})
+  if (!skipped.length) return ""
+  const hiddenCount = Math.max(0, skipped.length - MAX_SKIPPED_SHOWN)
+  const shown = skipped
+    .slice(0, MAX_SKIPPED_SHOWN)
+    .map(([location, reason]) => `${location} (${reason})`)
+    .join("; ")
+  return `referenced documents not loaded: ${shown}${hiddenCount ? `; … ${hiddenCount} more` : ""}`
+}
+
 export const describeSnapshot = snapshot =>
   [
     snapshot.warning,
+    describeSkipped(snapshot.spec),
     `spec read ${formatAge(snapshot.fetchedAt)} from ${snapshot.label}`,
   ]
     .filter(Boolean)

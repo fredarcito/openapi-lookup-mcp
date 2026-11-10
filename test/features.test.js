@@ -3,6 +3,7 @@ import { mkdtemp, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
+import { stem } from "../src/search.js"
 import { createSpecStore } from "../src/spec.js"
 import { getEndpoint, getSchema, searchEndpoints } from "../src/tools.js"
 
@@ -106,30 +107,56 @@ test("finds endpoints through descriptions, parameters and schema names", () =>
   ]).then(([byDescription, byParameter, bySchema]) => {
     assert.match(byDescription, /^GET \/jobs\/\{jobId\}\/matches/)
     assert.match(byParameter, /^GET \/jobs\/\{jobId\}\/matches/)
-    assert.match(bySchema, /^POST \/candidates/)
-    assert.doesNotMatch(bySchema, /GET \/jobs\/\{jobId\}/)
+    assert.match(
+      bySchema,
+      /^POST \/candidates — Create a candidate\nGET \/jobs\/\{jobId\}\/matches/
+    )
+    assert.doesNotMatch(bySchema, /GET \/jobs —/)
   }))
 
-test("ranks the best endpoint first for a full sentence", () =>
-  Promise.all([
-    search("I need to retrieve candidates who match a specific job"),
-    search("retrieve the matches for a job"),
-  ]).then(([partial, complete]) => {
-    assert.match(partial, /closest matches:\nGET \/jobs\/\{jobId\}\/matches/)
-    assert.match(complete, /^GET \/jobs\/\{jobId\}\/matches/)
-    assert.doesNotMatch(complete, /POST \/candidates/)
+test("answers a full sentence through nested schemas and synonyms", () =>
+  search("I need to retrieve candidates who match a specific job").then(text => {
+    assert.match(text, /^GET \/jobs\/\{jobId\}\/matches — Ranked matches\n\n/)
   }))
 
-test("ranks path matches first and falls back to partial matches", () =>
-  Promise.all([search("jobs"), search("jobs invoices")]).then(
-    ([ranked, partial]) => {
-      assert.doesNotMatch(ranked, /closest matches/)
+test("ranks the most specific endpoint first", () =>
+  search("jobs").then(text => {
+    assert.match(text, /^GET \/jobs — List jobs\nDELETE \/jobs — Delete jobs\nGET \/jobs\/\{jobId\}\/matches/)
+  }))
+
+test("says which words were unknown or only partly matched", () =>
+  Promise.all([search("jobs invoices"), search("delete candidates")]).then(
+    ([unknown, partial]) => {
+      assert.match(
+        unknown,
+        /^Nothing in the spec mentions "invoices"; searched for the other words\.\nGET \/jobs — List jobs/
+      )
       assert.match(
         partial,
-        /^No endpoint matches every word of "jobs invoices"; closest matches:\nGET \/jobs/
+        /^No endpoint matches every word; closest matches:\n/
       )
+      assert.match(partial, /DELETE \/jobs/)
+      assert.match(partial, /POST \/candidates/)
     }
   ))
+
+test("understands other word forms and compound identifiers", () =>
+  Promise.all([
+    search("creating candidates"),
+    search("listJobMatches"),
+    search("job_id min_score"),
+    search("fullName"),
+  ]).then(([inflected, camelCase, snakeCase, property]) => {
+    assert.match(inflected, /^POST \/candidates — Create a candidate/)
+    assert.match(camelCase, /^GET \/jobs\/\{jobId\}\/matches/)
+    assert.match(snakeCase, /^GET \/jobs\/\{jobId\}\/matches/)
+    assert.match(property, /^POST \/candidates/m)
+  }))
+
+test("corrects a misspelled word and says so", () =>
+  search("candidtes").then(text => {
+    assert.match(text, /^Read "candidtes" as "candidate"\.\nPOST \/candidates/)
+  }))
 
 test("maps action words to HTTP methods", () =>
   search("remove jobs").then(text => {
@@ -310,3 +337,19 @@ test("stops expanding nested schemas once the answer is large", () =>
       assert.doesNotMatch(lastSchema.text, /Not expanded/)
     })
   ))
+
+test("stems the forms of a word to the same string", () => {
+  const forms = [
+    ["create", "creates", "created", "creating"],
+    ["merge", "merged", "merging"],
+    ["star", "starred", "starring"],
+    ["repository", "repositories"],
+    ["add", "adding", "added"],
+    ["price", "prices", "pricing"],
+  ]
+  forms.forEach(([base, ...others]) =>
+    others.forEach(other => assert.equal(stem(other), stem(base), other))
+  )
+  assert.notEqual(stem("string"), stem("str"))
+  assert.equal(stem("status"), "status")
+})

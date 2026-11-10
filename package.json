@@ -1,7 +1,7 @@
 {
   "name": "@harborkit/openapi-lookup-mcp",
-  "version": "0.1.0",
-  "description": "MCP server that lets AI coding agents look up one endpoint of an OpenAPI/Swagger spec at a time, as a compact summary, instead of reading the whole spec",
+  "version": "0.2.0",
+  "description": "MCP server that lets AI coding agents look up one endpoint or schema of an OpenAPI/Swagger spec at a time, as a compact summary, instead of reading the whole spec",
   "type": "module",
   "bin": {
     "openapi-lookup-mcp": "src/server.js"
@@ -12,18 +12,31 @@
   "scripts": {
     "start": "node src/server.js",
     "test": "node --test",
-    "benchmark": "node scripts/benchmark.js"
+    "benchmark": "node scripts/benchmark.js",
+    "benchmark:search": "node scripts/search-benchmark.js"
   },
   "keywords": [
     "mcp",
+    "model-context-protocol",
+    "mcp-server",
     "openapi",
     "swagger",
+    "api",
     "ai",
     "agents",
     "claude",
+    "claude-code",
     "cursor"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fredarcito/openapi-lookup-mcp.git"
+  },
+  "homepage": "https://github.com/fredarcito/openapi-lookup-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/fredarcito/openapi-lookup-mcp/issues"
+  },
   "engines": {
     "node": ">=18"
   },

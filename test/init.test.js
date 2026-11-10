@@ -15,7 +15,11 @@ test("creates .mcp.json and .cursor/mcp.json with a pinned entry", async () => {
   const files = initProject({ cwd, ...PACKAGE, specUrl: SPEC })
 
   assert.equal(files.length, 2)
-  for (const file of files) {
+  assert.deepEqual(
+    files.map(({ change }) => change),
+    ["added", "added"]
+  )
+  for (const { file } of files) {
     const config = JSON.parse(await readFile(file, "utf8"))
     assert.deepEqual(config.mcpServers["api-spec"], {
       command: "npx",
@@ -43,20 +47,64 @@ test("keeps servers and settings that were already configured", async () => {
   assert.equal(config.extra, true)
 })
 
-test("replaces an existing api-spec entry with the new URL", async () => {
-  const cwd = await newProject()
+const writeCursorConfig = async (cwd, entry) => {
   await mkdir(path.join(cwd, ".cursor"))
   await writeFile(
     path.join(cwd, ".cursor", "mcp.json"),
-    JSON.stringify({ mcpServers: { "api-spec": { command: "old" } } })
+    JSON.stringify({ mcpServers: { "api-spec": entry } })
   )
+}
 
-  initProject({ cwd, ...PACKAGE, specUrl: SPEC })
+const readCursorConfig = async cwd =>
+  JSON.parse(await readFile(path.join(cwd, ".cursor", "mcp.json"), "utf8"))
 
-  const config = JSON.parse(
-    await readFile(path.join(cwd, ".cursor", "mcp.json"), "utf8")
-  )
+test("updates its own api-spec entry with the new URL", async () => {
+  const cwd = await newProject()
+  await writeCursorConfig(cwd, {
+    command: "npx",
+    args: ["-y", "openapi-lookup-mcp@0.0.9"],
+    env: { OPENAPI_SPEC_URL: "https://old.test/spec.yaml" },
+  })
+
+  const files = initProject({ cwd, ...PACKAGE, specUrl: SPEC })
+
+  const config = await readCursorConfig(cwd)
   assert.equal(config.mcpServers["api-spec"].env.OPENAPI_SPEC_URL, SPEC)
+  assert.deepEqual(
+    files.map(({ change }) => change),
+    ["added", "updated"]
+  )
+  assert.deepEqual(
+    initProject({ cwd, ...PACKAGE, specUrl: SPEC }).map(({ change }) => change),
+    ["unchanged", "unchanged"]
+  )
+})
+
+test("refuses to replace another server that uses the same name", async () => {
+  const cwd = await newProject()
+  await writeCursorConfig(cwd, { command: "old" })
+
+  assert.throws(
+    () => initProject({ cwd, ...PACKAGE, specUrl: SPEC }),
+    /A different server named "api-spec" is already configured in .*mcp\.json/
+  )
+  const config = await readCursorConfig(cwd)
+  assert.deepEqual(config.mcpServers["api-spec"], { command: "old" })
+  await assert.rejects(readFile(path.join(cwd, ".mcp.json")))
+})
+
+test("keeps both servers with --name and replaces with --force", async () => {
+  const cwd = await newProject()
+  await writeCursorConfig(cwd, { command: "old" })
+
+  initProject({ cwd, ...PACKAGE, specUrl: SPEC, name: "billing-api" })
+  const named = await readCursorConfig(cwd)
+  assert.deepEqual(named.mcpServers["api-spec"], { command: "old" })
+  assert.equal(named.mcpServers["billing-api"].env.OPENAPI_SPEC_URL, SPEC)
+
+  initProject({ cwd, ...PACKAGE, specUrl: SPEC, force: true })
+  const forced = await readCursorConfig(cwd)
+  assert.equal(forced.mcpServers["api-spec"].env.OPENAPI_SPEC_URL, SPEC)
 })
 
 test("fails without a spec URL and writes nothing", async () => {

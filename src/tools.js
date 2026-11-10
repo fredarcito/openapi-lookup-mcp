@@ -1,8 +1,5 @@
-import {
-  findSpecPaths,
-  searchOperations,
-  suggestOperations,
-} from "./lookup.js"
+import { findSpecPaths, suggestOperations } from "./lookup.js"
+import { searchOperations } from "./search.js"
 import {
   HTTP_METHODS,
   getPathItem,
@@ -107,8 +104,22 @@ export const getEndpoint = (store, { path, method, raw, refresh }) =>
     })
   )
 
+const quoteWords = words => words.map(word => `"${word}"`).join(", ")
+
+const describeSearchNotes = ({ isComplete, unknownWords, corrections }) =>
+  [
+    corrections.length
+      ? `Read ${corrections.map(({ word, correctedTo }) => `"${word}" as "${correctedTo}"`).join(", ")}.`
+      : "",
+    unknownWords.length
+      ? `Nothing in the spec mentions ${quoteWords(unknownWords)}; searched for the other words.`
+      : "",
+    isComplete ? "" : "No endpoint matches every word; closest matches:",
+  ].filter(Boolean)
+
 const runSearch = (snapshot, query) => {
-  const { isComplete, matches } = searchOperations(snapshot.spec, query)
+  const result = searchOperations(snapshot.spec, query)
+  const { isComplete, matches } = result
   if (!matches.length) {
     return {
       found: false,
@@ -121,17 +132,18 @@ const runSearch = (snapshot, query) => {
     isComplete ? MAX_SEARCH_RESULTS : MAX_PARTIAL_RESULTS
   )
   const hiddenCount = isComplete ? matches.length - shownMatches.length : 0
-  const heading = isComplete
-    ? ""
-    : `No endpoint matches every word of "${query}"; closest matches:\n`
   const truncationNote = hiddenCount
-    ? `\n… ${hiddenCount} more; add terms to narrow the search.`
-    : ""
+    ? [`… ${hiddenCount} more; add terms to narrow the search.`]
+    : []
   return {
-    found: isComplete,
+    found: isComplete && !result.unknownWords.length,
     isError: false,
     text: withFooter(
-      `${heading}${shownMatches.map(renderOperationLine).join("\n")}${truncationNote}`,
+      [
+        ...describeSearchNotes(result),
+        ...shownMatches.map(renderOperationLine),
+        ...truncationNote,
+      ].join("\n"),
       snapshot
     ),
   }
