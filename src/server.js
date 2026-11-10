@@ -4,7 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod"
 import { createSpecStore } from "./spec.js"
-import { getEndpoint, searchEndpoints } from "./tools.js"
+import { getEndpoint, getSchema, searchEndpoints } from "./tools.js"
 import { SERVER_NAME, initProject } from "./init.js"
 
 const USAGE = `Usage: openapi-lookup-mcp <spec url or file>
@@ -13,7 +13,7 @@ const USAGE = `Usage: openapi-lookup-mcp <spec url or file>
 The spec location can also be given in the OPENAPI_SPEC_URL environment variable.`
 
 const INSTRUCTIONS =
-  "Looks up endpoints of this project's backend API from its OpenAPI/Swagger spec. Before writing or changing code that calls the API, use get_endpoint to read the exact params, body and responses, and search_endpoints when the path is not known. Do not download or read the spec file directly."
+  "Looks up endpoints of this project's backend API from its OpenAPI/Swagger spec. Before writing or changing code that calls the API, use get_endpoint to read the exact params, body and responses, search_endpoints when the path is not known, and get_schema to read one data model or find the endpoints that use it. Do not download or read the spec file directly."
 
 const packageInfo = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8")
@@ -64,12 +64,14 @@ server.registerTool(
   {
     title: "Search API endpoints",
     description:
-      "List the API endpoints whose path, method, summary, tag or operation id contain every word of the query. Returns one line per endpoint.",
+      "Find API endpoints by keywords. Looks in the path, method, operation id, summary, tags, description, parameter names and schema names, and ranks the best matches first. Endpoints matching every keyword are listed; when none does, the closest partial matches are returned. Returns one line per endpoint.",
     inputSchema: {
       query: z
         .string()
         .min(1)
-        .describe('Words to look for, e.g. "jobs" or "post company photos"'),
+        .describe(
+          'Keywords rather than a sentence, e.g. "jobs" or "post company photos"'
+        ),
     },
     annotations: { readOnlyHint: true },
   },
@@ -104,6 +106,32 @@ server.registerTool(
     annotations: { readOnlyHint: true },
   },
   input => getEndpoint(store, input).then(toToolResult).catch(toToolError)
+)
+
+server.registerTool(
+  "get_schema",
+  {
+    title: "Get API schema details",
+    description:
+      "Show one schema (data model) of the API by name as a compact summary with the schemas it references, followed by the endpoints that use it. Use it to read a model without going through an endpoint, or to find which endpoints accept or return it.",
+    inputSchema: {
+      name: z.string().min(1).describe("Schema name, e.g. CandidateProfile"),
+      raw: z
+        .boolean()
+        .optional()
+        .describe(
+          "Return the original spec YAML instead of the summary; use only when the summary lacks a detail"
+        ),
+      refresh: z
+        .boolean()
+        .optional()
+        .describe(
+          "Download the spec again first; use when the result does not match the API's real behaviour"
+        ),
+    },
+    annotations: { readOnlyHint: true },
+  },
+  input => getSchema(store, input).then(toToolResult).catch(toToolError)
 )
 
 server.connect(new StdioServerTransport()).catch(error => {

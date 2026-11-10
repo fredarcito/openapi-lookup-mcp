@@ -3,6 +3,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { parse } from "yaml"
+import { bundleSpec, isRemote } from "./bundle.js"
 
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000
 const RETRY_MIN_AGE_MS = 5 * 60 * 1000
@@ -20,8 +21,6 @@ const cacheFileFor = source =>
     `${createHash("sha256").update(source).digest("hex").slice(0, 16)}.json`
   )
 
-const isRemote = source => /^https?:\/\//i.test(source)
-
 const parseSpec = (specText, source) => {
   const spec = parse(specText)
   if (!spec || typeof spec !== "object" || typeof spec.paths !== "object") {
@@ -29,8 +28,23 @@ const parseSpec = (specText, source) => {
       `${source} is not an OpenAPI/Swagger document (it has no "paths")`
     )
   }
-  return spec
+  return bundleSpec(spec, source)
 }
+
+const fetchText = source =>
+  fetch(source).then(response => {
+    if (!response.ok) {
+      throw new Error(
+        `Request to ${source} failed with status ${response.status}`
+      )
+    }
+    return response.text()
+  })
+
+export const readSpec = source =>
+  (isRemote(source) ? fetchText(source) : readFile(source, ENCODING)).then(
+    specText => parseSpec(specText, source)
+  )
 
 const formatAge = fetchedAt => {
   const totalMinutes = Math.floor((Date.now() - fetchedAt) / 60000)
@@ -58,20 +72,9 @@ const createRemoteStore = source => {
       .catch(() => null)
 
   const download = () =>
-    fetch(source)
-      .then(response => {
-        if (!response.ok) {
-          throw new Error(
-            `Request to ${source} failed with status ${response.status}`
-          )
-        }
-        return response.text()
-      })
-      .then(specText => {
-        const snapshot = {
-          fetchedAt: Date.now(),
-          spec: parseSpec(specText, source),
-        }
+    readSpec(source)
+      .then(spec => {
+        const snapshot = { fetchedAt: Date.now(), spec }
         memory = snapshot
         return mkdir(path.dirname(cacheFile), { recursive: true })
           .then(() => writeFile(cacheFile, JSON.stringify(snapshot)))
@@ -114,11 +117,11 @@ const createFileStore = source => {
       if (memory && memory.modifiedAt === fileStats.mtimeMs) {
         return { ...memory, label }
       }
-      return readFile(source, ENCODING).then(specText => {
+      return readSpec(source).then(spec => {
         memory = {
           modifiedAt: fileStats.mtimeMs,
           fetchedAt: Date.now(),
-          spec: parseSpec(specText, source),
+          spec,
         }
         return { ...memory, label, justRead: true }
       })

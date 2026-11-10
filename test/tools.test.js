@@ -148,7 +148,7 @@ test("summarises an endpoint and resolves referenced schemas once", () =>
       assert.match(result.text, /view\?: "short" \| "full" — level of detail/)
       assert.match(result.text, /200 — success: user/)
       assert.match(result.text, /nickname\?: string \| null/)
-      assert.match(result.text, /members: user\[\]/)
+      assert.match(result.text, /members\?: user\[\]/)
       assert.equal(result.text.match(/^user = /gm).length, 1)
       assert.equal(result.text.match(/^team = /gm).length, 1)
       assert.doesNotMatch(result.text, /DELETE/)
@@ -219,7 +219,7 @@ test("supports Swagger 2 parameters, responses and base path", () =>
       assert.match(result.text, /body:\n {2}pet: pet/)
       assert.match(result.text, /limit\?: integer/)
       assert.match(result.text, /200 — ok: pet\[\]/)
-      assert.match(result.text, /^pet = \{\n {2}name: string/m)
+      assert.match(result.text, /^pet = \{\n {2}name\?: string/m)
     }))
 
 test("rejects documents that are not a spec", () =>

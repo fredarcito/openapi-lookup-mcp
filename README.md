@@ -1,14 +1,16 @@
 # openapi-lookup-mcp
 
-An MCP server that lets AI coding agents look up **one endpoint at a time** from an OpenAPI/Swagger spec, as a compact summary, instead of downloading or reading the whole spec.
+MCP server for OpenAPI and Swagger specs that lets AI coding agents read only the endpoint or schema they need instead of downloading or parsing the whole specification.
 
-The only configuration is the location of the spec.
+It keeps the output compact and structured, resolves `$ref` chains, and is designed for tools like Claude Code and Cursor that need fast, direct API lookups without reading a multi-megabyte YAML file.
 
-## Why
+## Why this exists
 
-A real-world spec is easily 1 MB of YAML — hundreds of thousands of tokens. Agents usually need one endpoint. This server returns just that endpoint in a TypeScript-like notation that is roughly a third of the size of the original YAML, with every referenced schema resolved in the same answer:
+Production specs are often large: OpenAPI/Swagger documents can easily exceed 1 MB and contain hundreds of thousands of tokens. Most agents only need one route, one schema, or one specific parameter list. This tool reduces that to a small, readable summary.
 
-```
+Example output for a single endpoint:
+
+```text
 GET /users/{id} — Get a user
 auth: bearerAuth
 path:
@@ -26,24 +28,40 @@ user = {
 }
 
 team = {
-  name: string
-  members: user[]
+  name?: string
+  members?: user[]
 }
 ```
 
-## Setup
+## Supported inputs
 
-Run this in the root of your project:
+- OpenAPI 3.x
+- Swagger 2.0
+- Local files (`.yaml`, `.yml`, `.json`)
+- Remote URLs
+- `$ref` imports from other files and local fragments
+- Schema resolution for nested objects and arrays
+
+## Quick start
+
+From the root of the project you want to configure:
 
 ```bash
 npx -y @harborkit/openapi-lookup-mcp init https://example.com/api-docs/swagger.yaml
 ```
 
-It writes the server into `.mcp.json` (Claude Code) and `.cursor/mcp.json` (Cursor), keeping any other servers already configured there. Commit those files so the team gets the same setup. Then open the project and approve the `api-spec` server when Claude Code asks.
+This creates or updates:
 
-The spec can be a URL or a local file (for example `./docs/swagger.yaml`), in YAML or JSON, OpenAPI 3.x or Swagger 2.0. Each project has its own spec, so run `init` with that project's URL.
+- `.mcp.json` for Claude Code
+- `.cursor/mcp.json` for Cursor
 
-Manual configuration, if you prefer it: put this in `.mcp.json` and set the URL in `env`:
+It keeps any existing MCP servers already configured in those files and adds the server under the name `api-spec`.
+
+After the config is written, open the project in the supported client and approve the new server when prompted.
+
+## Manual configuration
+
+If you prefer to configure the server yourself, add a block like this to `.mcp.json` (or the equivalent file for your editor):
 
 ```json
 {
@@ -59,26 +77,98 @@ Manual configuration, if you prefer it: put this in `.mcp.json` and set the URL 
 }
 ```
 
-## Tools
+The same server can also be launched directly with:
+
+```bash
+OPENAPI_SPEC_URL=https://example.com/api-docs/swagger.yaml node src/server.js
+```
+
+## Tool reference
 
 | Tool | Input | Returns |
 |---|---|---|
-| `search_endpoints` | `query` | One line per endpoint whose path, method, summary, tag or operation id contains every word (up to 50) |
-| `get_endpoint` | `path`, optional `method`, `raw`, `refresh` | Auth, parameters, request body and responses of the endpoint, plus the schemas it references |
+| `search_endpoints` | `query` | Best matches first, one line per endpoint, up to 50 results |
+| `get_endpoint` | `path`, `method?`, `raw?`, `refresh?` | Compact endpoint summary with auth, params, request body, responses, and resolved schemas |
+| `get_schema` | `name`, `raw?`, `refresh?` | One schema and its related schemas, plus the endpoints that use it |
 
-`get_endpoint` accepts a template (`/users/{id}`), a concrete path (`/users/42`) or a full URL; the server base path is stripped when present. `raw: true` returns the original YAML of the endpoint and `refresh: true` downloads the spec again first.
+### `search_endpoints`
 
-## Staying up to date
+Searches by path, method, operation id, summary, tags, description, parameter names and schema names. It ignores filler words, handles singular/plural matches, and maps action words to HTTP methods such as:
 
-- A remote spec is cached for 6 hours (in memory and in `~/.cache/openapi-lookup-mcp`).
-- When an endpoint or a search has no match, the spec is downloaded again before answering, at most once every 5 minutes, so newly added endpoints are found without any action.
-- A local file is re-read whenever it changes.
-- Every answer ends with the age of the spec it was read from.
+- `create` → `POST`
+- `remove` → `DELETE`
+
+Endpoints matching all keywords are listed first; otherwise the closest partial matches are returned.
+
+### `get_endpoint`
+
+Accepts:
+
+- a template such as `/users/{id}`
+- a concrete path such as `/users/42`
+- a full URL such as `https://example.test/api/users/42?x=1`
+
+The server removes the API base path when present before matching. `raw: true` returns the original spec YAML for that endpoint, while `refresh: true` forces a fresh fetch before answering.
+
+### `get_schema`
+
+Looks up a schema by name case-insensitively and suggests similar names when no exact match exists. It returns:
+
+- the schema definition
+- referenced nested schemas
+- the endpoints that use the schema directly or transitively
+
+## Reading the output
+
+- `name?` marks an optional property or parameter; `name` without `?` is required.
+- Constraints and flags appear in parentheses after the type, for example `limit?: integer (minimum: 1, default: 20) — rows per page`.
+- Supported keywords include `default`, `readOnly`, `writeOnly`, `deprecated`, `minimum`, `maximum`, `minLength`, `maxLength`, `pattern`, `minItems`, `maxItems` and `uniqueItems`.
+- `discriminator` shows the discriminator property and its mapping, for example `discriminator: kind (dog → dog, cat → cat)`.
+- `A | B` is a union, `A & B` is an intersection, and `T | null` is a nullable type.
+- Unresolvable references are reported as `unresolved reference …` instead of being silently dropped.
+- `auth:` shows how each scheme is sent, for example `bearerAuth (http bearer JWT)` or `apiKey (apiKey in header "X-API-Key")`.
+- Response headers appear under each response as `header Name?: type`.
+- Nested schemas are expanded until the answer reaches a compact size budget; remaining references are summarized as `Not expanded …` and can be read with `get_schema`.
+
+## Caching and freshness
+
+- Remote specs are cached for 6 hours in memory and in `~/.cache/openapi-lookup-mcp`.
+- When a search or endpoint lookup returns no match, the server refreshes the spec before answering, with a cooldown of at most 5 minutes.
+- Local files are re-read whenever they change.
+- Referenced files are re-read only when the main spec changes.
+- Every result includes the age of the spec it was read from.
+
+## Benchmark
+
+The project includes a benchmark script:
+
+```bash
+npm run benchmark
+```
+
+This renders every endpoint and schema for a set of public specs, fails if any render throws, and compares the compact summary against the raw YAML for the same endpoint. You can also pass your own spec URLs or local files to benchmark those instead.
+
+| Spec | Endpoints | Schemas | Render failures | Unresolved refs | Whole spec (tokens) | Median endpoint, raw YAML | Median endpoint, compact | Compact / raw |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Petstore (Swagger 2.0) | 20 | 6 | 0 | 0 | 4,404 | 265 | 99 | 35% |
+| Petstore (OpenAPI 3.0) | 19 | 6 | 0 | 0 | 5,622 | 365 | 136 | 37% |
+| Stripe | 612 | 1,538 | 0 | 0 | 1,622,072 | 12,753 | 5,387 | 43% |
+| GitHub REST | 1,272 | 1,011 | 0 | 0 | 2,802,448 | 1,407 | 490 | 32% |
+
+Measured on 2026-11-10. Tokens are estimated as `characters / 4`. The `Compact / raw` ratio compares the total size of all endpoints in both formats.
 
 ## Development
 
 ```bash
 npm install
 npm test
+npm run benchmark
 node src/server.js path/to/spec.yaml
 ```
+
+## Notes
+
+- The server expects Node.js 18 or newer.
+- The package name is `@harborkit/openapi-lookup-mcp`.
+- The generated MCP server name is `api-spec`.
+- `OPENAPI_SPEC_URL` is the environment variable used when launching the server directly.
