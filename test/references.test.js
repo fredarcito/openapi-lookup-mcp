@@ -51,6 +51,9 @@ const startServer = routes =>
       route(response, `http://127.0.0.1:${server.address().port}`)
     })
     servers.push(server)
+    // Node 18 does not run a top-level after() hook, so the servers must
+    // not keep the test process alive on their own.
+    server.unref()
     server.listen(0, "127.0.0.1", () =>
       resolve(`http://127.0.0.1:${server.address().port}`)
     )
@@ -61,7 +64,12 @@ const sendJson = body => response => {
   response.end(JSON.stringify(typeof body === "function" ? body() : body))
 }
 
-after(() => servers.forEach(server => server.close()))
+after(() =>
+  servers.forEach(server => {
+    server.close()
+    server.closeAllConnections()
+  })
+)
 
 const withEnvironment = (name, value, action) => {
   const previous = process.env[name]
