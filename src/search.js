@@ -65,11 +65,14 @@ const CORE_FIELDS = new Set([
 ])
 
 const SATURATION = 3
+const COVERAGE_POWER = 1
+const RELATIVE_CUTOFF = 0.3
+export const DEFAULT_LIMIT = 10
 const SYNONYM_FACTOR = 0.7
 const PREFIX_FACTOR = 0.6
 const FUZZY_FACTOR = 0.5
 const MIN_PREFIX_LENGTH = 4
-const MIN_FUZZY_LENGTH = 4
+const MIN_FUZZY_LENGTH = 5
 const LONG_WORD_LENGTH = 8
 const MAX_FUZZY_CANDIDATES = 3
 const PROPERTY_DEPTH = 2
@@ -298,7 +301,10 @@ const editDistance = (first, second, limit) => {
 const closestSpellings = (index, token) => {
   if (token.length < MIN_FUZZY_LENGTH) return []
   const limit = token.length >= LONG_WORD_LENGTH ? 2 : 1
+  // A typo rarely changes the first letter, while two different words
+  // often differ only there ("callback" and "fallback").
   return index.vocabulary
+    .filter(candidate => candidate[0] === token[0])
     .map(candidate => ({
       candidate,
       distance: editDistance(token, candidate, limit),
@@ -377,7 +383,7 @@ const scoreTerm = (index, candidates) => {
       (rarity * frequency * (SATURATION + 1)) / (frequency + SATURATION)
     )
   )
-  return scores
+  return { rarity, scores }
 }
 
 const queryWords = query => {
@@ -386,39 +392,52 @@ const queryWords = query => {
   return meaningfulWords.length ? meaningfulWords : words
 }
 
-export const searchOperations = (spec, query) => {
+// Ranks every operation that matches at least one word. An operation
+// that misses a word loses that word's score and is also scaled down by
+// the share of the query it covers, where a rare word is a bigger share
+// than a common one. Results far below the best one are left out.
+export const searchOperations = (spec, query, { limit = DEFAULT_LIMIT } = {}) => {
   const index = indexOf(spec)
   const terms = queryWords(query).map(word => ({
     word,
     ...candidatesOf(index, word),
   }))
-  const knownTerms = terms.filter(({ candidates }) => candidates.length)
+  const scoredTerms = terms
+    .filter(({ candidates }) => candidates.length)
+    .map(({ candidates }) => scoreTerm(index, candidates))
+  const totalRarity = scoredTerms.reduce(
+    (total, { rarity }) => total + rarity,
+    0
+  )
   const totals = new Map()
-  knownTerms.forEach(({ candidates }) =>
-    scoreTerm(index, candidates).forEach((score, documentIndex) => {
-      const total = totals.get(documentIndex) || { score: 0, matchedTerms: 0 }
+  scoredTerms.forEach(({ rarity, scores }) =>
+    scores.forEach((score, documentIndex) => {
+      const total = totals.get(documentIndex) || {
+        score: 0,
+        rarity: 0,
+        matchedTerms: 0,
+      }
       totals.set(documentIndex, {
         score: total.score + score,
+        rarity: total.rarity + rarity,
         matchedTerms: total.matchedTerms + 1,
       })
     })
   )
   const ranked = [...totals]
-    .map(([documentIndex, { score, matchedTerms }]) => ({
+    .map(([documentIndex, { score, rarity, matchedTerms }]) => ({
       entry: index.entries[documentIndex],
-      matchedTerms,
-      score: (score * matchedTerms) / knownTerms.length,
+      isComplete: matchedTerms === scoredTerms.length,
+      score: score * (rarity / (totalRarity || 1)) ** COVERAGE_POWER,
     }))
-    .sort(
-      (first, second) =>
-        second.matchedTerms - first.matchedTerms || second.score - first.score
-    )
-  const complete = ranked.filter(
-    ({ matchedTerms }) => matchedTerms === knownTerms.length
+    .sort((first, second) => second.score - first.score)
+  const relevant = ranked.filter(
+    ({ score }) => score >= ranked[0].score * RELATIVE_CUTOFF
   )
   return {
-    isComplete: complete.length > 0,
-    matches: (complete.length ? complete : ranked).map(({ entry }) => entry),
+    isComplete: Boolean(ranked[0]?.isComplete),
+    matches: relevant.slice(0, limit).map(({ entry }) => entry),
+    hiddenCount: Math.max(0, relevant.length - limit),
     unknownWords: terms
       .filter(({ candidates }) => !candidates.length)
       .map(({ word }) => word),

@@ -107,10 +107,7 @@ test("finds endpoints through descriptions, parameters and schema names", () =>
   ]).then(([byDescription, byParameter, bySchema]) => {
     assert.match(byDescription, /^GET \/jobs\/\{jobId\}\/matches/)
     assert.match(byParameter, /^GET \/jobs\/\{jobId\}\/matches/)
-    assert.match(
-      bySchema,
-      /^POST \/candidates — Create a candidate\nGET \/jobs\/\{jobId\}\/matches/
-    )
+    assert.match(bySchema, /^POST \/candidates — Create a candidate/)
     assert.doesNotMatch(bySchema, /GET \/jobs —/)
   }))
 
@@ -353,3 +350,40 @@ test("stems the forms of a word to the same string", () => {
   assert.notEqual(stem("string"), stem("str"))
   assert.equal(stem("status"), "status")
 })
+
+const manyEndpoints = count => ({
+  openapi: "3.0.3",
+  paths: Object.fromEntries(
+    Array.from({ length: count }, (unused, index) => [
+      `/invoices/kind${index}`,
+      { get: { summary: `List invoices of kind ${index}`, responses: {} } },
+    ])
+  ),
+})
+
+test("shows the ten most relevant endpoints unless a limit is given", () =>
+  createStore(manyEndpoints(25)).then(store =>
+    Promise.all([
+      searchEndpoints(store, { query: "invoices" }),
+      searchEndpoints(store, { query: "invoices", limit: 25 }),
+    ]).then(([byDefault, withLimit]) => {
+      assert.equal(byDefault.text.match(/^GET /gm).length, 10)
+      assert.match(
+        byDefault.text,
+        /^… 15 more; add words to narrow the search or pass a higher limit\.$/m
+      )
+      assert.equal(withLimit.text.match(/^GET /gm).length, 25)
+      assert.doesNotMatch(withLimit.text, /more;/)
+    })
+  ))
+
+test("leaves out endpoints that barely match", () =>
+  search("delete jobs").then(text => {
+    assert.match(text, /^DELETE \/jobs — Delete jobs/)
+    assert.doesNotMatch(text, /POST \/candidates/)
+  }))
+
+test("does not correct a word into an unrelated one", () =>
+  search("fandidates").then(text => {
+    assert.match(text, /^No endpoints match "fandidates"\./)
+  }))

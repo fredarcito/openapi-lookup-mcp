@@ -1,5 +1,5 @@
 import { findSpecPaths, suggestOperations } from "./lookup.js"
-import { searchOperations } from "./search.js"
+import { DEFAULT_LIMIT, searchOperations } from "./search.js"
 import {
   HTTP_METHODS,
   getPathItem,
@@ -19,7 +19,6 @@ import {
 import { describeSnapshot } from "./spec.js"
 
 const MAX_SEARCH_RESULTS = 50
-const MAX_PARTIAL_RESULTS = 15
 const MAX_SCHEMA_USERS = 30
 const MAX_SCHEMA_SUGGESTIONS = 30
 
@@ -117,9 +116,11 @@ const describeSearchNotes = ({ isComplete, unknownWords, corrections }) =>
     isComplete ? "" : "No endpoint matches every word; closest matches:",
   ].filter(Boolean)
 
-const runSearch = (snapshot, query) => {
-  const result = searchOperations(snapshot.spec, query)
-  const { isComplete, matches } = result
+const runSearch = (snapshot, { query, limit }) => {
+  const result = searchOperations(snapshot.spec, query, {
+    limit: Math.min(Math.max(1, limit || DEFAULT_LIMIT), MAX_SEARCH_RESULTS),
+  })
+  const { isComplete, matches, hiddenCount } = result
   if (!matches.length) {
     return {
       found: false,
@@ -127,13 +128,8 @@ const runSearch = (snapshot, query) => {
       text: withFooter(`No endpoints match "${query}".`, snapshot),
     }
   }
-  const shownMatches = matches.slice(
-    0,
-    isComplete ? MAX_SEARCH_RESULTS : MAX_PARTIAL_RESULTS
-  )
-  const hiddenCount = isComplete ? matches.length - shownMatches.length : 0
   const truncationNote = hiddenCount
-    ? [`… ${hiddenCount} more; add terms to narrow the search.`]
+    ? [`… ${hiddenCount} more; add words to narrow the search or pass a higher limit.`]
     : []
   return {
     found: isComplete && !result.unknownWords.length,
@@ -141,7 +137,7 @@ const runSearch = (snapshot, query) => {
     text: withFooter(
       [
         ...describeSearchNotes(result),
-        ...shownMatches.map(renderOperationLine),
+        ...matches.map(renderOperationLine),
         ...truncationNote,
       ].join("\n"),
       snapshot
@@ -149,8 +145,8 @@ const runSearch = (snapshot, query) => {
   }
 }
 
-export const searchEndpoints = (store, { query }) =>
-  withRetry(store, false, snapshot => runSearch(snapshot, query))
+export const searchEndpoints = (store, { query, limit }) =>
+  withRetry(store, false, snapshot => runSearch(snapshot, { query, limit }))
 
 const renderUsers = (label, entries) => {
   if (!entries.length) return []

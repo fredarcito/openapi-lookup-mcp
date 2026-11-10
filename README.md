@@ -36,7 +36,29 @@ team = {
 spec read just now from spec.yaml
 ```
 
-On public specs the summary is 32–43% of the size of the same endpoint in YAML; see [Benchmark](#benchmark).
+On public specs the summary is 32–43% of the size of the same endpoint in YAML, and finding and reading one endpoint costs about 2,000 tokens on a spec of 2.8 million; see [Token cost](#token-cost).
+
+## Token cost
+
+Measured on the GitHub REST and Stripe specs with the 111 queries of the search benchmark. Tokens are estimated as `characters / 4`; no agent was involved, so the agent's own reasoning is not counted.
+
+| | GitHub REST | Stripe |
+|---|---:|---:|
+| Whole spec | 2,802,448 | 1,622,072 |
+| Tool definitions and instructions, once per session | ~820 | ~820 |
+| One search (median) | ~220 | ~180 |
+| Reading the endpoint that was found (median) | ~1,650 | ~6,340 |
+| **Search and read one endpoint (median)** | **~1,900** | **~6,550** |
+
+Without the tool, an agent has three options, all worse on a large spec:
+
+- **Read the whole spec.** Neither of these specs fits in a context window.
+- **Grep a local file and read pieces of YAML.** The same endpoint with its schemas is about three times larger in YAML than in the compact summary, and following each `$ref` by hand takes several turns.
+- **Fetch a remote spec.** A URL cannot be grepped, so the agent downloads everything or works from a lossy summary.
+
+The queries above target popular, large endpoints. Across every endpoint of the GitHub spec the median summary is about 490 tokens.
+
+When it does not pay off: on a small spec such as Petstore (about 5,000 tokens in full), reading the file once is affordable. The tool still wins for a handful of lookups, but an agent that needs most of the endpoints spends about the same either way.
 
 ## Supported inputs
 
@@ -107,7 +129,7 @@ npx -y @harborkit/openapi-lookup-mcp https://example.com/api-docs/swagger.yaml
 
 | Tool | Input | Returns |
 |---|---|---|
-| `search_endpoints` | `query` | Ranked matches, one line per endpoint, up to 50 results; understands word forms, identifiers and typos |
+| `search_endpoints` | `query`, `limit?` | The 10 most relevant endpoints, one line each; understands word forms, identifiers and typos |
 | `get_endpoint` | `path`, `method?`, `raw?`, `refresh?` | Compact endpoint summary with auth, params, request body, responses, and resolved schemas |
 | `get_schema` | `name`, `raw?`, `refresh?` | One schema and its related schemas, plus the endpoints that use it |
 
@@ -129,13 +151,15 @@ How a query is read:
 - **Identifiers** are split into their words, so `listJobMatches`, `job_matches` and `job matches` are the same query.
 - **Action words** match the HTTP method and their synonyms: `retrieve` or `show` → `GET`, `add` or `new` → `POST`/`create`, `edit` or `modify` → `PATCH`/`PUT`/`update`, `remove` → `DELETE`.
 - **Abbreviations** match the words they start: `repo` finds `repository`.
-- **Typos** are corrected when a word is not in the spec at all, and the answer says so.
+- **Typos** are corrected when a word is not in the spec at all, and the answer says so. Only words of five letters or more are corrected, and never by changing the first letter.
 
 How results are ranked:
 
 - A word that is rare in the spec counts for more than one that appears in most endpoints.
 - A match in a short, specific text counts for more than one in a long text, so `create issue` ranks `POST …/issues` above `POST …/issues/{issue_number}/assignees`.
-- Endpoints matching every word are listed (up to 50). When none does, the 15 closest are returned under a line that says so.
+- An endpoint that misses a word of the query is ranked lower, and more so when the missing word is a rare one. When not even the best result has every word, the answer starts with a line that says so.
+- Endpoints that score far below the best one are left out, so a precise query gets a short answer.
+- At most 10 endpoints are returned, about 200 tokens. When more are relevant the answer ends with `… N more`; pass `limit` (up to 50) to list everything about a resource.
 
 ```text
 > search_endpoints { "query": "create teams" }
@@ -154,7 +178,7 @@ GET /users/{id} — Get a user
 POST /teams — Create a team
 ```
 
-Keywords still work better than long sentences, and the search is lexical: it does not know that "bookmark" means "star". See [Search quality](#search-quality) for measurements.
+Keywords still work better than long sentences, and the search matches words, not meanings: it does not know that "bookmark" means "star". The tool description tells the agent to search again with the API's own terms when the endpoint it needs is not listed; with short answers, a second search costs less than one long answer. See [Search quality](#search-quality) for measurements.
 
 ### `get_endpoint`
 
@@ -254,22 +278,32 @@ Measured on 2026-11-10. Tokens are estimated as `characters / 4`. The `Compact /
 npm run benchmark:search            # add "-- --misses" to list the queries that fail
 ```
 
-This runs the 88 queries in `scripts/search-queries.js` against the GitHub and Stripe specs. Each query names the endpoint an agent would want back. The report gives, per query type, how often that endpoint is among the first 1, 5 and 10 results (Top-1, Top-5, Top-10) and the mean reciprocal rank (MRR, the mean of 1 / rank).
+This runs the 111 queries in `scripts/search-queries.js` against the GitHub and Stripe specs. Each query names the endpoint an agent would want back. The report gives, per query type, how often that endpoint is among the first 1, 5 and 10 results (Top-1, Top-5, Top-10), the mean reciprocal rank (MRR, the mean of 1 / rank) and the mean number of endpoints in an answer.
 
-| Query type | Example | Queries | Top-1 | Top-5 | Top-10 | MRR |
-|---|---|---:|---:|---:|---:|---:|
-| keyword | `merge pull request` | 18 | 78% | 100% | 100% | 0.87 |
-| sentence | `how do I add a comment to an issue` | 14 | 43% | 79% | 79% | 0.55 |
-| paraphrase | `remove a member's access to a repo` | 14 | 29% | 43% | 50% | 0.36 |
-| inflection | `merging pull requests` | 11 | 64% | 91% | 100% | 0.75 |
-| compound | `createPullRequestReview` | 11 | 64% | 100% | 100% | 0.78 |
-| field | `release tag_name prerelease` | 10 | 40% | 100% | 100% | 0.62 |
-| typo | `merge pul request` | 10 | 80% | 100% | 100% | 0.90 |
-| **all** | | 88 | 57% | 86% | 89% | 0.69 |
+| Query type | Example | Queries | Top-1 | Top-5 | Top-10 | MRR | Results shown |
+|---|---|---:|---:|---:|---:|---:|---:|
+| keyword | `merge pull request` | 18 | 78% | 100% | 100% | 0.87 | 9.3 |
+| sentence | `how do I add a comment to an issue` | 14 | 36% | 71% | 86% | 0.49 | 9.6 |
+| paraphrase | `remove a member's access to a repo` | 37 | 32% | 46% | 57% | 0.39 | 9.5 |
+| inflection | `merging pull requests` | 11 | 64% | 91% | 100% | 0.75 | 10.0 |
+| compound | `createPullRequestReview` | 11 | 64% | 100% | 100% | 0.78 | 9.5 |
+| field | `release tag_name prerelease` | 10 | 40% | 90% | 100% | 0.59 | 9.4 |
+| typo | `merge pul request` | 10 | 80% | 100% | 100% | 0.90 | 9.2 |
+| **all** | | 111 | 51% | 77% | 84% | 0.62 | 9.5 |
 
-Measured on 2026-11-10 with version 0.2.0. The substring search this replaced scored 36% / 58% / 65% / 0.46 on the same queries.
+Measured on 2026-11-10 with version 0.2.0. A search answer is about 220 tokens on the GitHub spec and 180 on Stripe (median).
 
-Paraphrases remain the weak spot: a query whose words are not in the spec ("bookmark a repository", "publish a new version") cannot be found by a lexical search. The query set is small and hand-written, so one query moves a row by 6 to 10 points; treat differences of that size as noise.
+Paraphrases remain the weak spot: a query whose words are not in the spec ("bookmark a repository", "tag an issue" for labels, "reverse a payment" for refunds) cannot be found by matching words. The query set is hand-written and was also used to tune the ranking, so these figures are optimistic; one query moves a row by 3 to 10 points.
+
+## Limitations
+
+- **Search matches words, not meanings.** A query with none of the API's own terms ("bookmark" for star, "chargeback" for dispute) will not find the endpoint; the agent has to search again.
+- **Search understands English only.** Filler words, word forms and action synonyms are English.
+- **Large schema graphs are cut.** Nested schemas beyond about 4,000 tokens are named, not expanded, so reading a deeply linked model can take several `get_schema` calls.
+- **Examples are not shown** in the compact summary; `raw: true` returns them.
+- **Constraints of array items** (for example the `minLength` of each element) are not shown; only those of the array itself are.
+- **Referenced documents behind a redirect are not loaded**, and a referenced file that changes is only re-read when the main spec changes.
+- **Not covered:** callbacks, links, webhooks and the `style`/`explode` serialization of parameters.
 
 ## Development
 
@@ -280,6 +314,24 @@ npm run benchmark
 npm run benchmark:search
 node src/server.js path/to/spec.yaml
 ```
+
+Source layout:
+
+| File | Responsibility |
+|---|---|
+| `src/server.js` | Command line, `init` command and MCP tool registration |
+| `src/tools.js` | The three tools: lookup, error messages and answer text |
+| `src/spec.js` | Loading, caching and refreshing the spec |
+| `src/bundle.js` | Loading referenced documents and the rules for what may be loaded |
+| `src/download.js` | HTTP download with timeout and size limit |
+| `src/render.js` | Compact TypeScript-like and raw YAML rendering |
+| `src/lookup.js` | Matching a requested path to a path of the spec |
+| `src/search.js` | Search index, stemming and ranking |
+| `src/schemas.js` | Schema index and which endpoints use each schema |
+| `src/init.js` | Writing the MCP configuration files |
+| `scripts/` | Benchmarks; not part of the published package |
+
+Tests use Node's built-in runner and need no network, except `test/references.test.js`, which starts local HTTP servers. The benchmarks download public specs. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## Notes
 

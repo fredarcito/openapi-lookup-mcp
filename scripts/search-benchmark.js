@@ -4,10 +4,6 @@ import { listOperations } from "../src/render.js"
 import { readSpec } from "../src/spec.js"
 import { QUERY_SETS } from "./search-queries.js"
 
-// The tool shows up to 50 endpoints that match every word, or the 15
-// closest ones otherwise; an answer further down is never seen.
-const SHOWN_WHEN_COMPLETE = 50
-const SHOWN_WHEN_PARTIAL = 15
 const CUTOFFS = [1, 5, 10]
 const ALL_TYPES = "all"
 
@@ -15,17 +11,14 @@ const operationKey = ({ method, specPath }) =>
   `${method.toUpperCase()} ${specPath}`
 
 const rankOf = (spec, { query, expected }) => {
-  const { isComplete, matches } = searchOperations(spec, query)
-  const shown = matches.slice(
-    0,
-    isComplete ? SHOWN_WHEN_COMPLETE : SHOWN_WHEN_PARTIAL
-  )
-  const position = shown.findIndex(entry =>
+  const { matches } = searchOperations(spec, query)
+  const position = matches.findIndex(entry =>
     expected.includes(operationKey(entry))
   )
   return {
     rank: position === -1 ? null : position + 1,
-    top: shown[0] ? operationKey(shown[0]) : "nothing",
+    top: matches[0] ? operationKey(matches[0]) : "nothing",
+    shownCount: matches.length,
   }
 }
 
@@ -36,6 +29,9 @@ const summarise = results => ({
       results.filter(({ rank }) => rank !== null && rank <= cutoff).length /
       results.length
   ),
+  meanShown:
+    results.reduce((total, { shownCount }) => total + shownCount, 0) /
+    results.length,
   meanReciprocalRank:
     results.reduce((total, { rank }) => total + (rank ? 1 / rank : 0), 0) /
     results.length,
@@ -44,12 +40,12 @@ const summarise = results => ({
 const percent = share => `${Math.round(share * 100)}%`
 
 const formatRow = (label, results) => {
-  const { count, hits, meanReciprocalRank } = summarise(results)
-  return `| ${[label, count, ...hits.map(percent), meanReciprocalRank.toFixed(2)].join(" | ")} |`
+  const { count, hits, meanReciprocalRank, meanShown } = summarise(results)
+  return `| ${[label, count, ...hits.map(percent), meanReciprocalRank.toFixed(2), meanShown.toFixed(1)].join(" | ")} |`
 }
 
-const HEADER = `| Query type | Queries | ${CUTOFFS.map(cutoff => `Top-${cutoff}`).join(" | ")} | MRR |
-|---|---:|---:|---:|---:|---:|`
+const HEADER = `| Query type | Queries | ${CUTOFFS.map(cutoff => `Top-${cutoff}`).join(" | ")} | MRR | Results shown |
+|---|---:|---:|---:|---:|---:|---:|`
 
 const printTable = (title, results) => {
   const types = [...new Set(results.map(({ type }) => type))]
@@ -102,7 +98,7 @@ QUERY_SETS.reduce(
   .then(results => {
     printTable("All specs", results)
     console.log(
-      `\nTop-N is the share of queries whose expected endpoint is among the first N results; MRR is the mean of 1 / rank (0 when the endpoint is not shown).`
+      `\nTop-N is the share of queries whose expected endpoint is among the first N results; MRR is the mean of 1 / rank (0 when the endpoint is not shown); Results shown is the mean number of endpoints in an answer.`
     )
     if (showMisses) printMisses(results)
   })

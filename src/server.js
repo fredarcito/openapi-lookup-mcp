@@ -79,13 +79,22 @@ server.registerTool(
   {
     title: "Search API endpoints",
     description:
-      "Find API endpoints by keywords, best match first. Looks in the path, method, operation id, summary, tags, description, parameter names, schema names and the property names of request and response bodies. Word forms, camelCase or snake_case identifiers and small typos are understood. Endpoints matching every keyword are listed; when none does, the closest partial matches are returned. Returns one line per endpoint.",
+      "Find API endpoints by keywords, best match first. Looks in the path, method, operation id, summary, tags, description, parameter names, schema names and the property names of request and response bodies. Word forms, camelCase or snake_case identifiers and small typos are understood. Returns one line per endpoint, the 10 most relevant by default. The search matches words, not meanings: if the endpoint you need is not listed, search again with the terms this API uses (the results show its vocabulary) or with a synonym.",
     inputSchema: {
       query: z
         .string()
         .min(1)
         .describe(
           'Keywords rather than a sentence, e.g. "jobs", "create company photo" or "listJobMatches"'
+        ),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(50)
+        .optional()
+        .describe(
+          "Maximum number of endpoints to return (default 10); raise it to list everything about a resource"
         ),
     },
     annotations: { readOnlyHint: true },
