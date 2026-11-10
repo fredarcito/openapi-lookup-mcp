@@ -1,0 +1,112 @@
+#!/usr/bin/env node
+import { readFileSync } from "node:fs"
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
+import { z } from "zod"
+import { createSpecStore } from "./spec.js"
+import { getEndpoint, searchEndpoints } from "./tools.js"
+import { SERVER_NAME, initProject } from "./init.js"
+
+const USAGE = `Usage: openapi-lookup-mcp <spec url or file>
+       openapi-lookup-mcp init <spec url or file>
+
+The spec location can also be given in the OPENAPI_SPEC_URL environment variable.`
+
+const INSTRUCTIONS =
+  "Looks up endpoints of this project's backend API from its OpenAPI/Swagger spec. Before writing or changing code that calls the API, use get_endpoint to read the exact params, body and responses, and search_endpoints when the path is not known. Do not download or read the spec file directly."
+
+const packageInfo = JSON.parse(
+  readFileSync(new URL("../package.json", import.meta.url), "utf8")
+)
+
+const toToolResult = result => ({
+  content: [{ type: "text", text: result.text }],
+  isError: result.isError,
+})
+
+const toToolError = error => ({
+  content: [{ type: "text", text: error.message }],
+  isError: true,
+})
+
+if (process.argv[2] === "init") {
+  try {
+    const files = initProject({
+      cwd: process.cwd(),
+      packageName: packageInfo.name,
+      version: packageInfo.version,
+      specUrl: process.argv[3],
+    })
+    console.log(`Configured ${SERVER_NAME} in:\n${files.map(f => `  ${f}`).join("\n")}`)
+    console.log("Open the project in Claude Code or Cursor and approve the server when asked.")
+    process.exit(0)
+  } catch (error) {
+    console.error(error.message)
+    process.exit(1)
+  }
+}
+
+const source = process.argv[2] || process.env.OPENAPI_SPEC_URL
+
+if (!source) {
+  console.error(USAGE)
+  process.exit(1)
+}
+
+const store = createSpecStore(source)
+const server = new McpServer(
+  { name: packageInfo.name, version: packageInfo.version },
+  { instructions: INSTRUCTIONS }
+)
+
+server.registerTool(
+  "search_endpoints",
+  {
+    title: "Search API endpoints",
+    description:
+      "List the API endpoints whose path, method, summary, tag or operation id contain every word of the query. Returns one line per endpoint.",
+    inputSchema: {
+      query: z
+        .string()
+        .min(1)
+        .describe('Words to look for, e.g. "jobs" or "post company photos"'),
+    },
+    annotations: { readOnlyHint: true },
+  },
+  input => searchEndpoints(store, input).then(toToolResult).catch(toToolError)
+)
+
+server.registerTool(
+  "get_endpoint",
+  {
+    title: "Get API endpoint details",
+    description:
+      "Show the auth, parameters, request body and responses of one API endpoint as a compact summary with referenced schemas resolved. The path may be a template (/users/{id}), a concrete path (/users/42) or a full URL.",
+    inputSchema: {
+      path: z.string().min(1).describe("Endpoint path, e.g. /users/{id}"),
+      method: z
+        .string()
+        .optional()
+        .describe("HTTP method; omit to show every method of the path"),
+      raw: z
+        .boolean()
+        .optional()
+        .describe(
+          "Return the original spec YAML instead of the summary; use only when the summary lacks a detail"
+        ),
+      refresh: z
+        .boolean()
+        .optional()
+        .describe(
+          "Download the spec again first; use when the result does not match the API's real behaviour"
+        ),
+    },
+    annotations: { readOnlyHint: true },
+  },
+  input => getEndpoint(store, input).then(toToolResult).catch(toToolError)
+)
+
+server.connect(new StdioServerTransport()).catch(error => {
+  console.error(error.message)
+  process.exit(1)
+})
