@@ -1,14 +1,62 @@
 # openapi-lookup-mcp
 
-MCP server for OpenAPI and Swagger specs that lets AI coding agents read only the endpoint or schema they need instead of downloading or parsing the whole specification.
+MCP server that lets AI coding agents such as Claude Code and Cursor read one endpoint or schema of an OpenAPI or Swagger spec instead of the whole file. Real-world specs often run to millions of tokens and do not fit in a context window; with this server the agent searches the spec, gets back a compact summary with every `$ref` already resolved, and keeps working.
 
-It keeps the output compact and structured, resolves `$ref` chains, and is designed for tools like Claude Code and Cursor that need fast, direct API lookups without reading a multi-megabyte YAML file.
+- **Over 99% fewer tokens than reading the spec:** finding and reading one endpoint costs about 2,000 tokens on the 2.8-million-token GitHub spec.
+- **57–68% smaller than the same endpoint in YAML**, with nested schemas resolved in a single call.
+- **Built-in search** that handles typos, word forms and identifiers such as `listJobMatches`, with no model or embeddings.
+- **Local files or remote URLs**, OpenAPI 3.x and Swagger 2.0, with caching and automatic refresh.
 
-## Why this exists
+## Installation
 
-Production specs are often large: OpenAPI/Swagger documents can easily exceed 1 MB and contain hundreds of thousands of tokens. Most agents only need one route, one schema, or one specific parameter list. This tool reduces that to a small, readable summary.
+Requires Node.js 18 or newer. From the root of your project:
 
-Example output for a single endpoint:
+```bash
+npx -y @harborkit/openapi-lookup-mcp init https://example.com/api-docs/swagger.yaml
+```
+
+Then open the project in Claude Code or Cursor and approve the new `api-spec` server when prompted.
+
+The command writes `.mcp.json` (Claude Code) and `.cursor/mcp.json` (Cursor), keeping any servers already configured there. Running it again updates the entry, for example with a new URL. If a different server is already registered as `api-spec`, nothing is changed: add `--name <other name>` to keep both, or `--force` to replace it.
+
+```bash
+npx -y @harborkit/openapi-lookup-mcp init https://example.com/api-docs/swagger.yaml --name billing-api
+```
+
+### Manual configuration
+
+If you prefer to configure the server yourself, add a block like this to `.mcp.json` (or the equivalent file for your editor):
+
+```json
+{
+  "mcpServers": {
+    "api-spec": {
+      "command": "npx",
+      "args": ["-y", "@harborkit/openapi-lookup-mcp@0.2.0"],
+      "env": {
+        "OPENAPI_SPEC_URL": "https://example.com/api-docs/swagger.yaml"
+      }
+    }
+  }
+}
+```
+
+The same server can also be launched directly, with the spec as an argument or in `OPENAPI_SPEC_URL`:
+
+```bash
+npx -y @harborkit/openapi-lookup-mcp https://example.com/api-docs/swagger.yaml
+```
+
+#### Environment variables
+
+| Variable | Purpose |
+|---|---|
+| `OPENAPI_SPEC_URL` | URL or file path of the spec, when it is not given as an argument |
+| `OPENAPI_ALLOWED_REF_HOSTS` | Extra hosts that referenced documents may be loaded from (comma-separated, or `*` for any); see [Referenced documents](#referenced-documents) |
+| `OPENAPI_REF_ROOT` | Folder that a local spec may read referenced files from, instead of the folder the server runs in |
+| `XDG_CACHE_HOME` | Where the cache of remote specs is kept; defaults to `~/.cache` |
+
+## Example
 
 ```text
 GET /users/{id} — Get a user
@@ -36,7 +84,7 @@ team = {
 spec read just now from spec.yaml
 ```
 
-On public specs the summary is 32–43% of the size of the same endpoint in YAML, and finding and reading one endpoint costs about 2,000 tokens on a spec of 2.8 million; see [Token cost](#token-cost).
+See [Token cost](#token-cost) for how this compares to reading the spec.
 
 ## Token cost
 
@@ -68,62 +116,6 @@ When it does not pay off: on a small spec such as Petstore (about 5,000 tokens i
 - Remote URLs
 - `$ref` imports from other files and local fragments, within the limits in [Referenced documents](#referenced-documents)
 - Schema resolution for nested objects and arrays
-
-## Quick start
-
-From the root of the project you want to configure:
-
-```bash
-npx -y @harborkit/openapi-lookup-mcp init https://example.com/api-docs/swagger.yaml
-```
-
-This creates or updates:
-
-- `.mcp.json` for Claude Code
-- `.cursor/mcp.json` for Cursor
-
-It keeps any existing MCP servers already configured in those files and adds the server under the name `api-spec`. Running it again updates that entry, for example with a new URL.
-
-If a different server is already registered as `api-spec`, nothing is changed. Add `--name <other name>` to keep both, or `--force` to replace it:
-
-```bash
-npx -y @harborkit/openapi-lookup-mcp init https://example.com/api-docs/swagger.yaml --name billing-api
-```
-
-After the config is written, open the project in the supported client and approve the new server when prompted.
-
-## Manual configuration
-
-If you prefer to configure the server yourself, add a block like this to `.mcp.json` (or the equivalent file for your editor):
-
-```json
-{
-  "mcpServers": {
-    "api-spec": {
-      "command": "npx",
-      "args": ["-y", "@harborkit/openapi-lookup-mcp@0.2.0"],
-      "env": {
-        "OPENAPI_SPEC_URL": "https://example.com/api-docs/swagger.yaml"
-      }
-    }
-  }
-}
-```
-
-The same server can also be launched directly, with the spec as an argument or in `OPENAPI_SPEC_URL`:
-
-```bash
-npx -y @harborkit/openapi-lookup-mcp https://example.com/api-docs/swagger.yaml
-```
-
-### Environment variables
-
-| Variable | Purpose |
-|---|---|
-| `OPENAPI_SPEC_URL` | URL or file path of the spec, when it is not given as an argument |
-| `OPENAPI_ALLOWED_REF_HOSTS` | Extra hosts that referenced documents may be loaded from (comma-separated, or `*` for any); see [Referenced documents](#referenced-documents) |
-| `OPENAPI_REF_ROOT` | Folder that a local spec may read referenced files from, instead of the folder the server runs in |
-| `XDG_CACHE_HOME` | Where the cache of remote specs is kept; defaults to `~/.cache` |
 
 ## Tool reference
 
